@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-29T08:33:45.876Z",
+  "sessionId": "sess_dwf-dwfrun-0c1853a0-43f4-41c9-b2b7-1a7e981a93e0-actor_4_1",
+  "event": "PostToolUse",
+  "toolName": "Write",
+  "file": "D:\\workspace\\澄迈8项目\\_regen\\coffee-pilot\\gate.py",
+  "outcome": "inconclusive",
+  "coverage": "partial",
+  "findingCount": 0,
+  "durationMs": 105,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}
