@@ -485,14 +485,14 @@ def archive_and_extract(
 ) -> tuple[Path, str]:
     """下载（或复用已验过的）zip 并安全解包到 out_dir/content/。返回 (archive_path, sha256)。"""
     archive_path = out_dir / "_downloads" / archive_name
-    sha = reuse_sha
+    sha = None
     if archive_path.is_file() and reuse_sha:
         actual = sha256_file(archive_path)
         if actual == reuse_sha:
+            sha = reuse_sha
             print(f"[{label}] 复用已下载且校验通过的归档: {archive_path}")
         else:
             print(f"[{label}] 归档 sha256 与 manifest 不符，重新下载")
-            sha = None
     if sha is None:
         sha = stream_to_file(client, link, archive_path, max_bytes, label)
     safe_extract_zip(archive_path, out_dir / "content", max_bytes)

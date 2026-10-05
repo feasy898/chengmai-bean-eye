@@ -94,8 +94,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pool", type=int, default=2, help="合成源预合成盘数（循环播放，默认 2）")
     p.add_argument("--classifier", choices=("rules", "nn"), default="rules",
                    help="分类器开关（批10；默认 rules=产品现状）")
-    p.add_argument("--nn-onnx", default="train/runs/crop_cls/b13_winner.onnx",
-                   help="NN 分类头 ONNX 路径（classifier=nn 时用，默认批13 过采样重训头）")
+    p.add_argument("--nn-onnx", default=None,
+                   help="NN 分类头 ONNX 路径（缺省自动探测: models/crop_cls.onnx → "
+                        "train/runs/crop_cls/b13_winner.onnx，均为批13 胜者权重）")
     p.add_argument("--tau", type=float, default=0.1,
                    help="NN 缺陷判决阈值 τ（批13 τ 扫描推荐工作点，默认 0.1）")
     return p
@@ -122,6 +123,16 @@ def _print_stats(args, *, frames, processed, skipped, dropped, elapsed, engine_f
     print("-" * 64)
 
 
+def _resolve_nn_onnx(arg_value):
+    """缺省权重解析：优先仓内 models/crop_cls.onnx（拆仓后批13 胜者迁至该处，
+    sha256 与 models/metrics.json export.sha256 一致），旧训练路径兜底。"""
+    if arg_value:
+        return arg_value
+    for cand in ("models/crop_cls.onnx", "train/runs/crop_cls/b13_winner.onnx"):
+        if Path(cand).is_file():
+            return cand
+    raise SystemExit("NN 权重缺失: models/crop_cls.onnx 与 train/runs/crop_cls/b13_winner.onnx 均不存在")
+
 def main(argv: list[str] | None = None) -> int:
     _reconfigure_utf8()
     args = build_parser().parse_args(argv)
@@ -135,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from beaneye.realtime import build_classifier
     try:
-        classifier = build_classifier(args.classifier, nn_onnx=args.nn_onnx, tau=args.tau)
+        classifier = build_classifier(args.classifier, nn_onnx=_resolve_nn_onnx(args.nn_onnx), tau=args.tau)
     except Exception as exc:
         print(f"[实时演示] 分类器装配失败：{exc}")
         return 2
