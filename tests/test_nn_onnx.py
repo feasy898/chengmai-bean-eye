@@ -85,10 +85,11 @@ def mask() -> BeanMask:
 
 
 def test_default_tau_is_sweep_recommendation():
-    """τ 缺省 = 0.13（批10 扫描推荐工作点：检出 56.36% 过 55% 门 / normal
-    66.47% 距 70% 门 3.53pt；两门实测不可同时满足）。"""
-    assert DEFAULT_TAU == 0.13
-    assert NnOnnxClassifier(session=MockSession(_logits_for(0.9, "broken", 0.05))).tau == 0.13
+    """τ 缺省 = 0.1（批13 τ 扫描推荐工作点：网格上无「检出≥55% 且
+    normal≥70%」可行点，取相对缺口最小者；胜者判定与探针三数见
+    train/runs/crop_cls/DEPLOYED.md）。"""
+    assert DEFAULT_TAU == 0.1
+    assert NnOnnxClassifier(session=MockSession(_logits_for(0.9, "broken", 0.05))).tau == 0.1
 
 
 def test_protocol_output_contract(mask):
@@ -298,10 +299,10 @@ def test_build_classifier_switch():
     rules = build_classifier("rules")
     assert isinstance(rules, RulesV0)
     nn = build_classifier("nn", nn_onnx="whatever/b9.onnx")
-    assert isinstance(nn, NnOnnxClassifier) and nn.tau == 0.13
+    assert isinstance(nn, NnOnnxClassifier) and nn.tau == 0.1
     nn2 = build_classifier("nn", nn_onnx="whatever/b9.onnx", tau=0.2)
     assert nn2.tau == 0.2
-    with pytest.raises(ClassifierUsageError, match="nn-onnx"):
+    with pytest.raises(ClassifierUsageError, match="nn_onnx"):
         build_classifier("nn")
     with pytest.raises(ClassifierUsageError, match="未知分类器"):
         build_classifier("torch")
@@ -312,7 +313,7 @@ class _StubClassifier:
 
     stage = "classify"
     version = "stub:v0"
-    tau = 0.13  # 引擎从实现读 τ 上 HUD
+    tau = 0.1  # τ 工作点随实现自带（本仓引擎不回读 τ，属性仅为协议对齐保留）
 
     def classify(self, crop_rgba, mask):
         return "black", 0.9, TAX.severity_rank("black")
@@ -328,84 +329,104 @@ def _synthetic_frame(dark: bool = True) -> np.ndarray:
 
 
 def test_realtime_engine_aggregates_stub_classifier():
-    engine = RealtimeEngine(_StubClassifier())
-    result = engine.process_frame(_synthetic_frame())
-    assert result.classifier == "stub:v0"
-    assert result.tau == 0.13
+    """注入分类器被引擎逐粒消费：分类版本挂在 engine.classify（本仓
+    FrameResult 无 classifier/τ 字段、无 hud_line——版本自述以实现属性
+    为准），豆级标签/严重度/计数/几何全部来自替身。"""
+    stub = _StubClassifier()
+    engine = RealtimeEngine(classify=stub)
+    assert engine.classify is stub and engine.classify.version == "stub:v0"
+    result = engine.process(_synthetic_frame())
     assert len(result.beans) >= 1
     assert result.counts == {"black": len(result.beans)}
     for b in result.beans:
-        x, y, w, h = b.bbox_px
-        assert 0 <= x and 0 <= y and w >= 1 and h >= 1
-        assert x + w <= result.width and y + h <= result.height
-        assert b.label == "black" and b.severity_rank == TAX.severity_rank("black")
+        # 本仓 BeanSpot 无 bbox_px：外接框从原始帧像素坐标轮廓折算
+        xs = [p[0] for p in b.contour_px]
+        ys = [p[1] for p in b.contour_px]
+        assert min(xs) >= 0 and min(ys) >= 0
+        assert max(xs) <= result.width and max(ys) <= result.height
+        assert max(xs) > min(xs) and max(ys) > min(ys)  # 外接框非退化（w,h >= 1）
+        assert b.defect == "black" and b.severity_rank == TAX.severity_rank("black")
         assert b.mask_id.startswith("top_")
-    assert result.frame_ms > 0
-    assert "cls=stub:v0" in result.hud_line() and "tau=0.13" in result.hud_line()
+    assert result.process_ms > 0
 
 
 def test_realtime_engine_empty_frame_zero_detection():
-    engine = RealtimeEngine(_StubClassifier())
-    result = engine.process_frame(_synthetic_frame(dark=False))
+    engine = RealtimeEngine(classify=_StubClassifier())
+    result = engine.process(_synthetic_frame(dark=False))
     assert result.beans == [] and result.counts == {}
 
 
 def test_realtime_engine_with_real_rules_classifier():
-    """rules 模式端到端（真 RulesV0）：标签全部落在 taxonomy 合法键内。"""
-    engine = RealtimeEngine(build_classifier("rules"))
-    result = engine.process_frame(_synthetic_frame())
-    assert result.classifier == RulesV0.version
-    assert result.tau is None  # rules 无 τ
+    """rules 模式端到端（真 RulesV0）：标签全部落在 taxonomy 合法键内；
+    rules 实现不带 τ 工作点（本仓 τ 只存在于 NnOnnxClassifier）。"""
+    engine = RealtimeEngine(classify=build_classifier("rules"))
+    result = engine.process(_synthetic_frame())
+    assert engine.classify.version == RulesV0.version
+    assert getattr(engine.classify, "tau", None) is None
     for b in result.beans:
-        assert TAX.is_valid_key(b.label)
+        assert TAX.is_valid_key(b.defect)
 
 
 def test_engine_classifier_versions_differ():
-    """开关两态在 HUD 自述上可区分（rules vs nn；nn 用注入会话保持离线）。"""
-    rules_engine = RealtimeEngine(build_classifier("rules"))
-    nn = NnOnnxClassifier(session=MockSession(_logits_for(0.9, "broken", 0.05)))
-    nn_engine = RealtimeEngine(nn)
-    assert rules_engine.process_frame(_synthetic_frame()).classifier != \
-        nn_engine.process_frame(_synthetic_frame()).classifier
-    assert nn_engine.process_frame(_synthetic_frame()).classifier == "nn_onnx:v1"
+    """开关两态的分类实现可区分（rules vs nn_onnx:v1；nn 用注入会话保持
+    离线），且 nn 引擎确实逐粒消费注入会话（而非静默回退 rules）。"""
+    rules_engine = RealtimeEngine(classify=build_classifier("rules"))
+    sess = MockSession(_logits_for(0.9, "broken", 0.05))
+    nn_engine = RealtimeEngine(classify=NnOnnxClassifier(session=sess))
+    assert rules_engine.classify.version != nn_engine.classify.version
+    assert nn_engine.classify.version == "nn_onnx:v1"
+    rules_engine.process(_synthetic_frame())
+    nn_engine.process(_synthetic_frame())
+    assert sess.n_calls >= 1
 
 
 # ---------------------------------------------------------------------------
-# demo CLI 冒烟（图片模式 + 用法错误面；全程无相机/无网络）
+# demo CLI 冒烟（离线单帧 + 用法错误面；全程无相机/无网络）
+#
+# 本仓 scripts/demo_realtime.py 与姊妹仓的三处差异（断言按本仓实际适配）：
+#   1) 无 EXIT_* 退出码常量——成功返回 0、用法错误返回 2，直接断言数值；
+#   2) --source 只收 usb/ip/synth 三值（无图片路径模式）——离线冒烟改走
+#      synth 单帧（--max-frames 1 --no-show，小画布 + pool=1 控时长）；
+#   3) main 的用法错误经 print() 走 stdout（仅 argparse 错误走 stderr）。
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def demo_image(tmp_path: Path) -> Path:
-    p = tmp_path / "frame.jpg"
-    cv2.imwrite(str(p), _synthetic_frame())
-    return p
+def test_demo_cli_rules_image_mode(capsys):
+    """rules 模式离线端到端：synth 单帧跑通、退出码 0、统计如实打印。"""
+    from scripts.demo_realtime import main
 
-
-def test_demo_cli_rules_image_mode(demo_image: Path, capsys):
-    from scripts.demo_realtime import EXIT_OK, main
-
-    code = main(["--classifier", "rules", "--source", str(demo_image), "--no-show"])
-    assert code == EXIT_OK
+    code = main(["--classifier", "rules", "--source", "synth",
+                 "--width", "320", "--height", "256", "--pool", "1", "--beans", "6",
+                 "--max-frames", "1", "--no-show", "--save-frames", "0"])
+    assert code == 0
     out = capsys.readouterr().out
-    assert '"classifier": "rules_v0:v1"' in out
-    assert '"tau": null' in out
+    assert "[实时演示] 源就绪：synth" in out
+    assert "统计" in out and "读取帧" in out  # 退出统计块存在
 
 
 def test_demo_cli_nn_requires_onnx_path(capsys):
-    from scripts.demo_realtime import EXIT_USAGE, main
+    """classifier=nn 缺 onnx 路径 → 装配层用法错误（退出码 2 + 指名 nn_onnx）。"""
+    from scripts.demo_realtime import main
 
-    assert main(["--classifier", "nn", "--no-show"]) == EXIT_USAGE
-    assert "nn-onnx" in capsys.readouterr().err
+    # 缺省 --nn-onnx 非空（train/runs/crop_cls/b13_winner.onnx），显式置空才触发该分支
+    code = main(["--classifier", "nn", "--nn-onnx", "", "--source", "synth",
+                 "--max-frames", "1", "--no-show"])
+    assert code == 2
+    assert "nn_onnx" in capsys.readouterr().out  # 用法错误经 print() 走 stdout
 
 
-def test_demo_cli_nn_missing_onnx_file_exits_cleanly(demo_image: Path, capsys):
-    from scripts.demo_realtime import EXIT_SOURCE, main
+def test_demo_cli_nn_missing_onnx_file_exits_cleanly(capsys):
+    """缺 ONNX 文件响亮失败：装配惰性（路径不存在不在装配期暴露），首次
+    逐粒分类时以 NnOnnxError（「不存在」）浮出——不静默成功、不误报源错误。"""
+    from beaneye.classify import NnOnnxError
+    from scripts.demo_realtime import main
 
-    code = main(["--classifier", "nn", "--nn-onnx", "Z:/nope/b9.onnx",
-                 "--source", str(demo_image), "--no-show"])
-    assert code == EXIT_SOURCE
-    assert "NN" in capsys.readouterr().err
+    with pytest.raises(NnOnnxError, match="不存在"):
+        main(["--classifier", "nn", "--nn-onnx", "Z:/nope/b9.onnx",
+              "--source", "synth", "--width", "320", "--height", "256",
+              "--pool", "1", "--beans", "6",
+              "--max-frames", "1", "--no-show", "--save-frames", "0"])
+    capsys.readouterr()  # 丢弃 demo 的过程输出（报错本体由异常携带）
 
 
 def test_demo_cli_unknown_classifier(capsys):

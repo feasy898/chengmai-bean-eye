@@ -1,4 +1,3 @@
-<<<<<<< 808b86e169802ec6d0b326143a70ad4c1de2c770
 {
   "bean_count": 350,
   "sieve_hist": {
@@ -26,36 +25,15 @@
     "4-8": 100
   },
   "est_weight_g": 196.0,
-  "weight_model": "area_linear:v1"
+  "weight_model": "area_linear:v1",
+  "size_band_hist": {
+    "large": 0,
+    "medium": 80,
+    "small": 270
+  },
+  "size_band_frac": {
+    "large": 0.0,
+    "medium": 0.22857142857142856,
+    "small": 0.7714285714285715
+  }
 }
-=======
-{
-  "bean_count": 350,
-  "sieve_hist": {
-    "13": 120,
-    "14": 150,
-    "15": 60,
-    "16": 20
-  },
-  "sieve_pass": true,
-  "eq_diameter_mm_stats": {
-    "min": 5.1,
-    "max": 8.2,
-    "mean": 6.4,
-    "median": 6.3
-  },
-  "color_lab_mean": [
-    132.9,
-    117.5,
-    148.3
-  ],
-  "delta_e_mean": 3.2,
-  "delta_e_hist": {
-    "0-2": 90,
-    "2-4": 160,
-    "4-8": 100
-  },
-  "est_weight_g": 196.0,
-  "weight_model": "area_linear:v1"
-}
->>>>>>> 3838d9fee1fe23698ae1971a739b2fcd7dbb12c5
