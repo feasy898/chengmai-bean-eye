@@ -125,9 +125,10 @@ def _print_stats(args, *, frames, processed, skipped, dropped, elapsed, engine_f
 
 def _resolve_nn_onnx(arg_value):
     """缺省权重解析：优先仓内 models/crop_cls.onnx（拆仓后批13 胜者迁至该处，
-    sha256 与 models/metrics.json export.sha256 一致），旧训练路径兜底。"""
-    if arg_value:
-        return arg_value
+    sha256 与 models/metrics.json export.sha256 一致），旧训练路径兜底。
+    None=未提供→自动探测；显式空串=用法错误（沿用既有 fail-closed 契约）。"""
+    if arg_value is not None:
+        return arg_value  # 显式传值(含空串)原样透传——空串沿既有装配层用法错误(exit 2)契约
     for cand in ("models/crop_cls.onnx", "train/runs/crop_cls/b13_winner.onnx"):
         if Path(cand).is_file():
             return cand
