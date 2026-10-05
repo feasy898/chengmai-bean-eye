@@ -100,12 +100,15 @@ def create_app(
     segment / classify:
         显式注入的分割/分类实现（满足冻结 Protocol；缺省探测
         ``beaneye.segment`` / ``beaneye.classify`` 工厂，探测不到即显式降级）。
+<<<<<<< 808b86e169802ec6d0b326143a70ad4c1de2c770
         批10 分类器开关：缺省（rules 工厂）行为不变；NN 头经
         ``classify=NnOnnxClassifier("train/runs/crop_cls/b9.onnx")`` 注入
         即换入（τ 校准判决见 ``beaneye.classify.nn_onnx``；实时侧开关
         ``beaneye.realtime`` / ``scripts/demo_realtime.py``）。注：本 API
         无 /live 端点；逐请求切换分类器需动 store/管线装配（改动大），
         暂不做 TODO。
+=======
+>>>>>>> 3838d9fee1fe23698ae1971a739b2fcd7dbb12c5
     allow_probe:
         False 时跳过工厂探测（纯注入或纯降级；测试用）。
     agent:
