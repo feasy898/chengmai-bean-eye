@@ -36,6 +36,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, replace as dc_replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import cv2
@@ -57,6 +58,7 @@ __all__ = [
     "CLASSIFIER_CHOICES",
     "ClassifierUsageError",
     "build_classifier",
+    "resolve_nn_onnx",
 ]
 
 CLASSIFIER_CHOICES = ("rules", "nn")
@@ -84,6 +86,31 @@ def build_classifier(
             raise ClassifierUsageError("classifier=nn 需要提供 nn_onnx 路径（如 train/runs/crop_cls/b9.onnx）")
         return NnOnnxClassifier(nn_onnx, tau=tau)
     raise ClassifierUsageError(f"未知分类器选项 {choice!r}（可选 {CLASSIFIER_CHOICES}）")
+
+
+def resolve_nn_onnx(arg_value: str | None) -> str | None:
+    """``--nn-onnx`` 缺省权重解析（原 ``scripts/demo_realtime._resolve_nn_onnx``，
+    批14 提公用：e2e 静态链 ``scripts/e2e_synth_run.py --classifier nn`` 同口径
+    复用，与实时侧共用同一份候选表）。
+
+    - ``None``（未提供）→ 按候选表自动探测：优先仓内 ``models/crop_cls.onnx``
+      （拆仓后批13 胜者迁至该处，sha256 与 models/metrics.json export.sha256
+      一致），旧训练路径 ``train/runs/crop_cls/b13_winner.onnx`` 兜底；均缺失
+      → ``SystemExit``（CLI fail-closed：缺权重响亮退出，绝不静默回退 rules）；
+    - 显式传值（**含空串**）→ 原样透传——空串沿既有装配层用法错误契约
+      （:func:`build_classifier` 抛 :class:`ClassifierUsageError`，CLI exit 2），
+      与「未提供」严格区分（commit 4f3bdb7 语义）。
+
+    候选表按 **cwd 相对路径** 解析（两个 CLI 均约定仓库根运行）。
+    """
+    if arg_value is not None:
+        return arg_value  # 显式传值(含空串)原样透传——空串沿既有装配层用法错误(exit 2)契约
+    for cand in ("models/crop_cls.onnx", "train/runs/crop_cls/b13_winner.onnx"):
+        if Path(cand).is_file():
+            return cand
+    raise SystemExit(
+        "NN 权重缺失: models/crop_cls.onnx 与 train/runs/crop_cls/b13_winner.onnx 均不存在"
+    )
 
 
 # ---------------------------------------------------------------------------

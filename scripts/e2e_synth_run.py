@@ -1,15 +1,18 @@
-"""W4c 端到端：合成盘全链一条命令（classic 分割 + 规则分类 → 三语护照）。
+"""W4c 端到端：合成盘全链一条命令（classic 分割 + 规则/NN 分类 → 三语护照）。
 
 运行（仓库根）::
 
     python scripts/e2e_synth_run.py --trays 3
+    python scripts/e2e_synth_run.py --trays 1 --classifier nn   # NN 分类头对比跑
 
-链路（plan/开发指令.md §2 数据流；识别腿 = 产品缺省 classic/rules）::
+链路（plan/开发指令.md §2 数据流；识别腿 = classic 分割 + ``--classifier``
+分类头开关，缺省 rules = 产品现状不变；nn = 批13 ONNX 头，装配口径与实时侧
+``beaneye.realtime.build_classifier`` 逐位同源，τ 缺省 = 部署工作点 0.1）::
 
     M12 compose_tray（程序化素材合成整盘对，无外部数据集路径）
       → M3 标定 calibrate_pair + warp_to_tray
       → M4 ClassicSeg（逐面真跑）
-      → M5 RulesV0（逐粒真跑）
+      → M5 RulesV0 / NnOnnxClassifier（逐粒真跑，--classifier 切换）
       → M6 匈牙利上下配对
       → M8 计量 → M9 标准引擎定级
       → M11 TemplateAgent 溯因 → M10 三语质量护照（二维码）
@@ -34,11 +37,14 @@ beaneye.segment / beaneye.classify 工厂真实接线 ClassicSeg + RulesV0），
   classic 粒数恢复率、真值↔检出 匈牙利质心匹配（6mm 门限）后的逐粒
   分类标签一致率（top/bottom/双面裁决）、grading.defect_counts 与真值
   直方对照。合成盘上 RulesV0 的已知精度（tests/test_classify acc≈0.77）
-  决定该一致率有限——按「AI 初检 + 人工复核」定位如实呈现。
+  决定该一致率有限——按「AI 初检 + 人工复核」定位如实呈现。NN 头
+  （--classifier nn）同口径记录，summary.json 另记 classifier/nn_onnx/tau
+  三字段，供同种子 A/B 对比（rules vs nn 一致率与定级结论）。
 
 产物：out/e2e_synth/ 下逐盘双面整盘图 + 首盘 write_batch 四件套抽样
 （labels JSON + manifest.yaml）+ 逐盘 crops 证据 + 三语护照 + summary.json。
-全程离线 CPU，不依赖网络与权重。
+全程离线 CPU；rules 档不依赖权重，nn 档需仓内 ONNX 权重（缺省自动探测，
+缺权重 fail-closed 退出）。
 """
 
 from __future__ import annotations
@@ -63,8 +69,11 @@ import zxingcpp  # noqa: E402
 
 from beaneye.acquisition.base import imwrite_bgr, write_json  # noqa: E402
 from beaneye.app import PipelineRequest, build_components, run_pipeline  # noqa: E402
+from beaneye.app.components import Components  # noqa: E402
 from beaneye.app.pipeline import STAGE_ORDER  # noqa: E402
 from beaneye.calibration import load_tray_config  # noqa: E402
+from beaneye.classify import DEFAULT_TAU  # noqa: E402
+from beaneye.realtime import build_classifier, resolve_nn_onnx  # noqa: E402
 from beaneye.report import canonical_sha256, parse_qr_payload  # noqa: E402
 from beaneye.schemas import TrayScan  # noqa: E402
 from beaneye.synth import ComposeConfig, compose_tray, sample_library, write_batch  # noqa: E402
@@ -107,6 +116,26 @@ def build_config(args: argparse.Namespace) -> ComposeConfig:
         per_class=20,
         library_seed=20260929,
     )
+
+
+def build_components_for(args: argparse.Namespace) -> Components:
+    """识别腿装配（--classifier 开关，批14）：
+
+    - ``rules``（缺省）→ ``build_components()`` 原样探测工厂——产品缺省
+      行为逐位不变（ClassicSeg + RulesV0，降级语义同旧版）；
+    - ``nn`` → 显式注入 :class:`beaneye.classify.NnOnnxClassifier`，装配口径
+      与实时侧同源：``beaneye.realtime.build_classifier("nn", nn_onnx, tau)``
+      + ``resolve_nn_onnx`` 缺省权重解析（None=自动探测 models/crop_cls.onnx
+      → train/runs/... 兜底，均缺 → SystemExit；空串=透传既有 exit 2 契约），
+      τ 缺省 = ``DEFAULT_TAU``（批13 部署工作点 0.1）。
+
+    分割腿两档同路（build_components 工厂探测 ClassicSeg）；注入的 NN 头
+    满足同一冻结 ClsModel 协议，run_pipeline 无差别消费（含降级检测）。
+    """
+    if args.classifier == "rules":
+        return build_components()
+    classifier = build_classifier("nn", nn_onnx=resolve_nn_onnx(args.nn_onnx), tau=args.tau)
+    return build_components(classify=classifier)
 
 
 # ---------------------------------------------------------------------------
@@ -200,8 +229,9 @@ def run_tray(idx: int, seed: int, cfg: ComposeConfig, library, args, data_root: 
         source="synth",
     )
 
-    # 装配（缺省探测工厂 → ClassicSeg + RulesV0；接不上即显式失败）
-    components = build_components()
+    # 装配（--classifier 开关：rules=产品缺省探测 ClassicSeg+RulesV0；
+    # nn=注入 NnOnnxClassifier；接不上/降级即显式失败，两档同断言）
+    components = build_components_for(args)
     degraded = components.degraded_stages()
     assert not degraded, f"盘 {idx}: 识别组件降级 {degraded}（{components.degraded_reasons()}）——e2e 要求产品链真实接线"
 
@@ -311,10 +341,24 @@ def main() -> int:
     ap.add_argument("--contacts-max", type=int, default=0)
     ap.add_argument("--standard", default="cqi_fine_robusta")
     ap.add_argument("--langs", default="zh,en,vi")
+    ap.add_argument("--classifier", choices=("rules", "nn"), default="rules",
+                    help="分类头开关（批14；默认 rules=产品现状 RulesV0；"
+                         "nn=NnOnnxClassifier，与实时侧同装配口径）")
+    ap.add_argument("--nn-onnx", default=None,
+                    help="NN 分类头 ONNX 路径（仅 --classifier nn 生效；缺省自动探测: "
+                         "models/crop_cls.onnx → train/runs/crop_cls/b13_winner.onnx，"
+                         "均为批13 胜者权重；均缺失则退出）")
+    ap.add_argument("--tau", type=float, default=DEFAULT_TAU,
+                    help="NN 缺陷判决阈值 τ（仅 --classifier nn 生效；"
+                         f"缺省 {DEFAULT_TAU} = 批13 部署工作点）")
     ap.add_argument("--seed0", type=int, default=410001)
     ap.add_argument("--out", default="out/e2e_synth")
     args = ap.parse_args()
     args.langs = [s.strip() for s in args.langs.split(",") if s.strip()]
+    if args.classifier == "nn":
+        # 缺省权重 fail-fast：进循环前解析一次（None→自动探测；缺权重 SystemExit），
+        # 解析结果回写 args 供 summary.json 如实记录探测到的权重路径
+        args.nn_onnx = resolve_nn_onnx(args.nn_onnx)
 
     t_all = time.perf_counter()
     cfg = build_config(args)
@@ -351,13 +395,17 @@ def main() -> int:
     matched_fin = sum(r["agreement"]["matched_final"] for r in rows)
     agree_fin = sum(r["agreement"]["final_agree"] for r in rows)
     summary = {
-        "e2e": "synth full chain (compose→calibration→classic segment→rules classify→"
+        "e2e": f"synth full chain (compose→calibration→classic segment→{args.classifier} classify→"
                "pairing→metrology→grading→agent→passport x3 langs)",
         "trays": args.trays,
         "standard": args.standard,
         "langs": args.langs,
         "canvas_px": args.canvas,
         "contacts": [args.contacts_min, args.contacts_max],
+        "classifier": args.classifier,
+        "nn_onnx": args.nn_onnx if args.classifier == "nn" else None,
+        "tau": args.tau if args.classifier == "nn" else None,
+        "seed0": args.seed0,
         "total_s": round(total_s, 1),
         "mean_s_per_tray": round(total_s / args.trays, 2),
         "stage_mean_s": {
@@ -383,9 +431,11 @@ def main() -> int:
     }
     write_json(out / "summary.json", summary)
     print(
-        f"\nE2E PASS: {args.trays} 盘全链（合成→标定→classic分割→规则分类→配对→"
-        f"计量→定级→三语护照）硬断言全通过；"
-        f"总时长 {total_s:.0f}s（{summary['mean_s_per_tray']}s/盘）；"
+        f"\nE2E PASS: {args.trays} 盘全链（合成→标定→classic分割→"
+        f"{'规则' if args.classifier == 'rules' else 'NN'}分类→配对→"
+        f"计量→定级→三语护照）硬断言全通过；分类头={args.classifier}"
+        + (f"（τ={args.tau}，权重={args.nn_onnx}）" if args.classifier == "nn" else "")
+        + f"；总时长 {total_s:.0f}s（{summary['mean_s_per_tray']}s/盘）；"
         f"粒数恢复率均值 {summary['count_recovery_mean']}；"
         f"标签一致率 {summary['label_agree_rate_total']}（记录值，不作验收线）；"
         f"报告 {out / 'summary.json'}"

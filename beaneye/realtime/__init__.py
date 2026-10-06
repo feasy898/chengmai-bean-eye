@@ -41,6 +41,7 @@ __all__ = [
     "CLASSIFIER_CHOICES",
     "ClassifierUsageError",
     "build_classifier",
+    "resolve_nn_onnx",
 ]
 
 _LAZY = {
@@ -62,6 +63,7 @@ _LAZY = {
     "CLASSIFIER_CHOICES": ("beaneye.realtime.engine", "CLASSIFIER_CHOICES"),
     "ClassifierUsageError": ("beaneye.realtime.engine", "ClassifierUsageError"),
     "build_classifier": ("beaneye.realtime.engine", "build_classifier"),
+    "resolve_nn_onnx": ("beaneye.realtime.engine", "resolve_nn_onnx"),
 }
 
 

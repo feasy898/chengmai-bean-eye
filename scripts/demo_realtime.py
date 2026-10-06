@@ -40,6 +40,7 @@ from beaneye.realtime import (  # noqa: E402
     SynthVideoSource,
     USBCameraSource,
     draw_overlay,
+    resolve_nn_onnx,
 )
 from beaneye.realtime.sources import RealtimeSource  # noqa: E402
 
@@ -102,6 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _resolve_nn_onnx(arg_value):
+    """已提公用至 :func:`beaneye.realtime.resolve_nn_onnx`（批14）——保留本名
+    作薄别名，仓内外旧引用零破坏；语义见公用版 docstring。"""
+    return resolve_nn_onnx(arg_value)
+
+
 def _print_stats(args, *, frames, processed, skipped, dropped, elapsed, engine_fps,
                  total_counts, saved_files, calibrated) -> None:
     """退出统计（实测值如实打印，不作任何放大）。"""
@@ -123,17 +130,6 @@ def _print_stats(args, *, frames, processed, skipped, dropped, elapsed, engine_f
     print("-" * 64)
 
 
-def _resolve_nn_onnx(arg_value):
-    """缺省权重解析：优先仓内 models/crop_cls.onnx（拆仓后批13 胜者迁至该处，
-    sha256 与 models/metrics.json export.sha256 一致），旧训练路径兜底。
-    None=未提供→自动探测；显式空串=用法错误（沿用既有 fail-closed 契约）。"""
-    if arg_value is not None:
-        return arg_value  # 显式传值(含空串)原样透传——空串沿既有装配层用法错误(exit 2)契约
-    for cand in ("models/crop_cls.onnx", "train/runs/crop_cls/b13_winner.onnx"):
-        if Path(cand).is_file():
-            return cand
-    raise SystemExit("NN 权重缺失: models/crop_cls.onnx 与 train/runs/crop_cls/b13_winner.onnx 均不存在")
-
 def main(argv: list[str] | None = None) -> int:
     _reconfigure_utf8()
     args = build_parser().parse_args(argv)
@@ -147,6 +143,10 @@ def main(argv: list[str] | None = None) -> int:
 
     from beaneye.realtime import build_classifier
     try:
+        # 权重缺省解析（resolve_nn_onnx，模块顶已导入）已提公用至
+        # beaneye.realtime（批14，e2e 静态链 --classifier nn 同口径复用）；
+        # None=自动探测、空串=透传既有 exit 2 契约，语义与原
+        # scripts 内 _resolve_nn_onnx 逐位一致
         classifier = build_classifier(args.classifier, nn_onnx=_resolve_nn_onnx(args.nn_onnx), tau=args.tau)
     except Exception as exc:
         print(f"[实时演示] 分类器装配失败：{exc}")
