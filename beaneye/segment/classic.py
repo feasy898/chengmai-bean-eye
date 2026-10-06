@@ -17,12 +17,19 @@ Otsu 前景 → 形态学开闭 → 距离变换种子 + ``cv2.watershed`` 切�
    否则码区质量远大于豆、会把全局阈值拖歪（实测夹具上阈值被拖进豆灰度带内）；
 2. **阈值极性自检**：浅色亚克力盘面约定前景=暗；若图像边框带的前景占比
    >50%，判定极性反转（防深色背景误配）；
-3. **粘连切分**：对每个连通域算距离变换，局部极大（深度 ≥ peak_min_mm、
+3. **色域约束精修**（掩码治理，批15·A路，默认开）：灰度阈值系把投影阴影/
+   亚克力反光梯度（中性色暗斑）一并收进前景——合成盘实测掩码 26.8% 像素
+   非豆（``tools/measure_mask_purity.py``），分类 crop 被污染、逐粒标签
+   一致率被拖死。豆是彩色目标（全类别 Lab 色度距背景 ≥9），阴影是中性
+   倍乘暗化（色度 ~2-4）：Lab 色度/亮度双分支约束收严前景，配适用性守卫
+   （前景近中性→退回纯灰度口径）与孔洞修补；纯度门见 tools/ 脚本；
+4. **粘连切分**：对每个连通域算距离变换，局部极大（深度 ≥ peak_min_mm、
    间距 ≥ peak_min_dist_mm）作种子；单种子/无种子域整域输出（豆外轮廓
    凸且椭圆状时距离变换单峰，天然不误切长圆豆；贴边豆的窄条深峰不足，
    整域保留为部分掩码）；多种子域用 watershed 按种子切分。
    已知短板（§9 风险表）：深度重叠（>~60%）粘连粒共用一个深峰，切不开；
    NN 分割模型上线前的既定降级，稠密盘粒数误差另设验收线。
+   （原 3. 粘连切分顺延为 4.，掩码治理插入为 3.）
 
 面别语义：冻结协议 ``predict(img_rgb, scan)`` 不携带 side，本实现按配置
 ``side``（默认 top）输出，M13 装配器（``beaneye.app.components``）对每面
@@ -132,6 +139,15 @@ class ClassicSeg:
             k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (cfg.close_ksize, cfg.close_ksize))
             fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k)
 
+        # ---- 3.5) 颜色空间精修（掩码治理：去阴影/背景泄漏） ----------------
+        # 灰度阈值系对「中性色暗斑」（投影阴影/亚克力反光梯度）与豆一视
+        # 同仁——掩码含 ~27% 非豆像素（tools/measure_mask_purity.py 实测），
+        # 分类头 crop 被污染。豆是彩色目标：Lab 色度距背景足够远；阴影是
+        # 中性倍乘暗化，色度不变。仅当前景确有色彩信息时启用（灰度演示盘
+        # 不适用，自动退回纯灰度口径），见 _color_gamut_refine。
+        if cfg.color_refine:
+            fg = self._color_gamut_refine(bgr, fg, cfg)
+
         # ---- 4) 连通域 → 种子/分水岭 → 逐豆掩码 ---------------------------
         min_area_px2 = cfg.min_area_mm2 / (mm_per_px * mm_per_px)
         # 巨型域护栏：单连通域盖过半张盘必是阈值病理（背景误判/整盘粘连噪声），
@@ -198,6 +214,79 @@ class ClassicSeg:
             [gray[:t, :].ravel(), gray[-t:, :].ravel(), gray[:, :t].ravel(), gray[:, -t:].ravel()]
         )
         return float(np.median(frame)) if frame.size else 255.0
+
+    def _color_gamut_refine(
+        self, bgr: np.ndarray, fg: np.ndarray, cfg: SegmentConfig
+    ) -> np.ndarray:
+        """Lab 色域约束精修：阈值掩码 ∩ 豆色域 → 剔除阴影/背景泄漏。
+
+        判别依据（合成盘实测，tools/measure_mask_purity.py 口径）：
+        咖啡豆全类别的 Lab 色度（√(Δa²+Δb²)，相对本图背景）最低 ~9（黑豆）、
+        多数 ≥13；而投影阴影是**中性倍乘暗化**（RGB 等比缩小 → 色相不变），
+        色度与背景同为 ~2-4。故：
+
+        - 色度分支 ``chroma ≥ color_refine_chroma_thr`` 收编一切有色豆；
+        - 亮度分支 ``|ΔL| ≥ color_refine_lum_thr`` 兜底近中性深色豆（黑豆
+          ΔL≈140，远超阴影最深处 ΔL≈60@强度0.3）——两分支取并集；
+        - **适用性守卫**：前景平均色度相对背景中位色度的裕量 <
+          ``color_refine_min_chroma_margin`` 时，说明本图前景本身近中性
+          （灰度演示盘/单色夹具），色域约束不可用 → 原样返回（退回纯
+          灰度口径，行为与 color_refine=false 逐位一致）；
+        - 修补：豆内近背景色高光被误剔 → 闭运算 + 孔洞填充（只补内部，
+          不外扩轮廓）。
+
+        背景参考色 = 图像边框带逐通道中位数（与 ``_background_level`` 同
+        口径扩展到 Lab 三通道；光照增益/伽马/暗角整图作用，相对量不受影响）。
+        """
+        lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2Lab).astype(np.float32)
+        h, w = fg.shape[:2]
+        t = max(2, int(round(min(h, w) * 0.01)))
+        frame = np.concatenate(
+            [
+                lab[:t].reshape(-1, 3),
+                lab[-t:].reshape(-1, 3),
+                lab[:, :t].reshape(-1, 3),
+                lab[:, -t:].reshape(-1, 3),
+            ]
+        )
+        if frame.size == 0:
+            return fg
+        bg_l, bg_a, bg_b = np.median(frame, axis=0)
+
+        fg_bool = fg > 0
+        if not fg_bool.any():
+            return fg
+        chroma = np.hypot(lab[..., 1] - bg_a, lab[..., 2] - bg_b)
+        lum_dist = np.abs(lab[..., 0] - bg_l)
+
+        # 适用性守卫：前景色彩信息相对背景无裕量（如灰度夹具盘）→ 不启用。
+        # 裕量 = 前景平均色度 − 背景中位色度：对前景成分构成（彩色豆/中性
+        # 暗斑的面积比）不敏感，只问「前景是否整体携带可用色彩信息」。
+        bg_chroma = float(np.median(np.hypot(frame[:, 1] - bg_a, frame[:, 2] - bg_b)))
+        fg_chroma = float(chroma[fg_bool].mean())
+        if fg_chroma - bg_chroma < cfg.color_refine_min_chroma_margin:
+            return fg
+
+        keep = (chroma >= cfg.color_refine_chroma_thr) | (
+            lum_dist >= cfg.color_refine_lum_thr
+        )
+        refined = fg_bool & keep
+        if not refined.any():
+            return fg
+        # 修补豆内高光误剔：先闭运算补缝、再填完全封闭的内部孔洞。
+        # 孔洞填充用外轮廓重绘（RETR_EXTERNAL + filled drawContours）而非
+        # scipy.binary_fill_holes：语义等价（外边界内全保留），2048² 实测
+        # ~20ms vs ~0.6s——掩码阶段总耗时须 ≤ 现状 3 倍（性能约束）。
+        if cfg.close_ksize > 1:
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (cfg.close_ksize, cfg.close_ksize))
+            refined = cv2.morphologyEx(refined.astype(np.uint8), cv2.MORPH_CLOSE, k) > 0
+        refined_u8 = refined.astype(np.uint8)
+        contours, _ = cv2.findContours(refined_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            filled = np.zeros_like(refined_u8)
+            cv2.drawContours(filled, contours, -1, 1, thickness=-1)
+            refined_u8 = filled
+        return refined_u8
 
     @staticmethod
     def _frame_foreground_frac(fg: np.ndarray, frac: float = 0.005) -> float:

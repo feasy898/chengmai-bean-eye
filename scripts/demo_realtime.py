@@ -146,8 +146,12 @@ def main(argv: list[str] | None = None) -> int:
         # 权重缺省解析（resolve_nn_onnx，模块顶已导入）已提公用至
         # beaneye.realtime（批14，e2e 静态链 --classifier nn 同口径复用）；
         # None=自动探测、空串=透传既有 exit 2 契约，语义与原
-        # scripts 内 _resolve_nn_onnx 逐位一致
-        classifier = build_classifier(args.classifier, nn_onnx=_resolve_nn_onnx(args.nn_onnx), tau=args.tau)
+        # scripts 内 _resolve_nn_onnx 逐位一致。
+        # 批15·A路修复：权重解析只在 nn 档执行——rules 档不依赖权重
+        # （e2e 同契约），缺权重不得阻塞产品缺省 rules 链路；nn 档维持
+        # fail-closed（缺权重响亮退出）。
+        nn_onnx = _resolve_nn_onnx(args.nn_onnx) if args.classifier == "nn" else None
+        classifier = build_classifier(args.classifier, nn_onnx=nn_onnx, tau=args.tau)
     except Exception as exc:
         print(f"[实时演示] 分类器装配失败：{exc}")
         return 2

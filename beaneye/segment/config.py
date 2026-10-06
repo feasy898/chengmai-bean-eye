@@ -66,6 +66,10 @@ class SegmentConfig:
     marker_margin_mm: float = 2.0
     conf_single: float = 0.9
     conf_split: float = 0.72
+    color_refine: bool = True
+    color_refine_chroma_thr: float = 8.0
+    color_refine_lum_thr: float = 90.0
+    color_refine_min_chroma_margin: float = 3.0
     side: str = "top"
     source: str = "defaults"  # defaults | <yaml 路径>
 
@@ -133,6 +137,24 @@ def load_segment_config(path: str | Path | None = None) -> SegmentConfig:
     for name, v in (("conf_single", conf_single), ("conf_split", conf_split)):
         if not 0.0 <= v <= 1.0:
             raise SegmentConfigError(f"{where}: `{name}` 必须在 [0,1]，得到 {v}")
+    color_refine = raw.get("color_refine", True)
+    if not isinstance(color_refine, bool):
+        raise SegmentConfigError(f"{where}: `color_refine` 必须是布尔，得到 {color_refine!r}")
+    chroma_thr = _num(raw, "color_refine_chroma_thr", where)
+    if not 0.0 <= chroma_thr <= 100.0:
+        raise SegmentConfigError(
+            f"{where}: `color_refine_chroma_thr` 必须在 [0,100]，得到 {chroma_thr}"
+        )
+    lum_thr = _num(raw, "color_refine_lum_thr", where)
+    if not 0.0 <= lum_thr <= 200.0:
+        raise SegmentConfigError(
+            f"{where}: `color_refine_lum_thr` 必须在 [0,200]，得到 {lum_thr}"
+        )
+    chroma_margin = _num(raw, "color_refine_min_chroma_margin", where)
+    if not 0.0 <= chroma_margin <= 50.0:
+        raise SegmentConfigError(
+            f"{where}: `color_refine_min_chroma_margin` 必须在 [0,50]，得到 {chroma_margin}"
+        )
     side = raw.get("side", "top")
     if side not in SIDES:
         raise SegmentConfigError(f"{where}: `side` 只能是 {'/'.join(SIDES)}，得到 {side!r}")
@@ -153,6 +175,10 @@ def load_segment_config(path: str | Path | None = None) -> SegmentConfig:
         marker_margin_mm=margin,
         conf_single=conf_single,
         conf_split=conf_split,
+        color_refine=color_refine,
+        color_refine_chroma_thr=chroma_thr,
+        color_refine_lum_thr=lum_thr,
+        color_refine_min_chroma_margin=chroma_margin,
         side=side,
         source=str(p),
     )
